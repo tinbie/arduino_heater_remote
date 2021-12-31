@@ -41,7 +41,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT,
 typedef enum {
     ERR_OK,
     ERR_ERR
-} ERR_STATUS;
+} ERR_STATUS_T;
 
 typedef enum {
     STATE_INIT,
@@ -49,9 +49,16 @@ typedef enum {
     STATE_PRE_HEAT,
     STATE_HEAT,
     STATE_ERR,
-} STATE;
+} STATE_T;
 
-STATE mState;
+typedef struct {
+    bool flgEnabled;
+    uint64_t tsStart;
+    uint64_t tsEnd;
+} TIMER_T;
+
+STATE_T mState;
+TIMER_T mTimer;
 bool mStateLedGreen;
 bool mStateLedRed;
 volatile bool mFlgButtonPressed;
@@ -62,7 +69,7 @@ volatile bool mFlgButtonPressed;
 /****************************************************************************/
 void static errorStateSet(void);
 
-ERR_STATUS static peripheriInit(void);
+ERR_STATUS_T static peripheriInit(void);
 
 void static displayRefresh(uint16_t duration);
 
@@ -88,7 +95,7 @@ void static errorStateSet(void) {
 /****************************************************************************/
 /** Function
  */
-ERR_STATUS static peripheriInit(void) {
+ERR_STATUS_T static peripheriInit(void) {
     /* init oled display */
     display.begin(SSD1306_SWITCHCAPVCC);
     display.display();
@@ -110,7 +117,7 @@ ERR_STATUS static peripheriInit(void) {
 /****************************************************************************/
 /** Function
  */
-void static displayRefresh(uint16_t duration) {    
+void static displayRefresh(uint16_t duration) {
     /* refresh display */
     display.clearDisplay();
     display.setTextSize(3.5);
@@ -199,7 +206,7 @@ void static irqButton(void) {
 /** Function
  */
 void setup(void) {
-    ERR_STATUS result;
+    ERR_STATUS_T result;
 
     result = peripheriInit();
     if (ERR_OK != result) {
@@ -216,7 +223,7 @@ void loop(void) {
     uint64_t timeDisplay = 0;
     uint64_t timeLed = 0;
     uint64_t timeButton = 0;
-    uint16_t duration = 30;
+    static uint16_t duration;
 
     while(1) {
         /* get timestamp */
@@ -234,7 +241,7 @@ void loop(void) {
 
                 case STATE_HEAT:
                     mState = STATE_STANDBY;
-                    break; 
+                    break;
 
                 default:
                     break;
@@ -245,10 +252,26 @@ void loop(void) {
 
         /* display loop */
         if (timeCurr > timeDisplay + DISPLAY_LOOP_TIMEOUT) {
-            timeDisplay = millis();
-            if (STATE_PRE_HEAT == mState) {
-                durationGet(&duration);
+            switch (mState) {
+                case STATE_PRE_HEAT:
+                    durationGet(&duration);
+                    break;
+
+                case STATE_HEAT:
+                    /* start timer */
+                    if (false == mTimer.flgEnabled) {
+                        mTimer.tsStart = millis();
+                        mTimer.tsEnd = mTimer.tsStart + duration;
+                        mTimer.flgEnabled = true;
+                    }
+                    /* calculate remaining time */
+                    duration = (mTimer.tsEnd - millis()) / 1000 * 60;
+                    break;
+
+                default:
+                    break;
             }
+            timeDisplay = millis();
             displayRefresh(duration);
         }
 
@@ -260,7 +283,7 @@ void loop(void) {
 
         /* TODO: implement loop for communication between
          * device and heater. Possibilities are 433 MHz RF,
-         * Bluetooth and Smartphone or GSM? 
+         * Bluetooth and Smartphone or GSM?
          */
     }
 }

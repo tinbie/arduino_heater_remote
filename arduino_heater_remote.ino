@@ -30,6 +30,7 @@
 #define DISPLAY_LOOP_TIMEOUT    100
 #define LED_LOOP_TIMEOUT        1000
 #define BUTTON_LOOP_TIMEOUT     2000
+#define COMM_LOOP_TIMEOUT       500
 
 
 /****************************************************************************/
@@ -62,12 +63,13 @@ TIMER_T mTimer;
 bool mStateLedGreen;
 bool mStateLedRed;
 volatile bool mFlgButtonPressed;
+bool mFlgCommEstablished;
 
 
 /****************************************************************************/
 /* Local Prototypes */
 /****************************************************************************/
-void static errorStateSet(void);
+void static stateSet(STATE_T status);
 
 ERR_STATUS_T static peripheriInit(void);
 
@@ -87,8 +89,8 @@ void loop(void);
 /****************************************************************************/
 /** Function
  */
-void static errorStateSet(void) {
-    mState = STATE_ERR;
+void static stateSet(STATE_T status) {
+    mState = status;
 }
 
 
@@ -108,7 +110,7 @@ ERR_STATUS_T static peripheriInit(void) {
     pinMode(BUTTON, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(BUTTON), irqButton, LOW);
 
-    mState = STATE_STANDBY;
+    stateSet(STATE_STANDBY);
 
     return ERR_OK;
 }
@@ -120,7 +122,7 @@ ERR_STATUS_T static peripheriInit(void) {
 void static displayRefresh(uint16_t duration) {
     /* refresh display */
     display.clearDisplay();
-    display.setTextSize(3.5);
+    display.setTextSize(2);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
 
@@ -131,16 +133,29 @@ void static displayRefresh(uint16_t duration) {
             break;
 
         case STATE_PRE_HEAT:
-            display.setTextSize(2);
             display.println("Heizdauer");
             display.print(duration);
             display.println(" min");
+            display.setTextSize(1);
+            if (true == mFlgCommEstablished) {
+                display.println("verbunden");
+            }
+            else {
+                display.println("nicht verbunden");
+            }
             break;
 
         case STATE_HEAT:
             display.println("Heizen");
             display.print(duration);
             display.println(" min");
+            display.setTextSize(1);
+            if (true == mFlgCommEstablished) {
+                display.println("verbunden");
+            }
+            else {
+                display.println("nicht verbunden");
+            }
             break;
 
         case STATE_ERR:
@@ -210,7 +225,7 @@ void setup(void) {
 
     result = peripheriInit();
     if (ERR_OK != result) {
-        errorStateSet();
+        stateSet(STATE_ERR);
     }
 }
 
@@ -223,6 +238,7 @@ void loop(void) {
     uint64_t timeDisplay = 0;
     uint64_t timeLed = 0;
     uint64_t timeButton = 0;
+    uint64_t timeComm = 0;
     static uint16_t duration;
 
     while(1) {
@@ -235,12 +251,19 @@ void loop(void) {
             switch (mState) {
                 case STATE_INIT:
                 case STATE_STANDBY:
-                case STATE_PRE_HEAT:
+                    /* go to next state */
                     mState = mState + 1;
                     break;
 
+                case STATE_PRE_HEAT:
+                    /* check if connection is established */
+                    if (true == mFlgCommEstablished) {
+                        mState = mState + 1;
+                    }
+                    break;
+
                 case STATE_HEAT:
-                    mState = STATE_STANDBY;
+                    stateSet(STATE_STANDBY);
                     break;
 
                 default:
@@ -260,12 +283,16 @@ void loop(void) {
                 case STATE_HEAT:
                     /* start timer */
                     if (false == mTimer.flgEnabled) {
-                        mTimer.tsStart = millis();
-                        mTimer.tsEnd = mTimer.tsStart + duration;
+                        mTimer.tsStart = millis() / 1000 + 59;
+                        mTimer.tsEnd = mTimer.tsStart + (duration * 60);
                         mTimer.flgEnabled = true;
                     }
                     /* calculate remaining time */
-                    duration = (mTimer.tsEnd - millis()) / 1000 * 60;
+                    duration = (mTimer.tsEnd * 1000 - millis()) / 1000 / 60;
+                    if (0 == duration) {
+                        stateSet(STATE_STANDBY);
+                        mTimer.flgEnabled = false;
+                    }
                     break;
 
                 default:
@@ -285,5 +312,15 @@ void loop(void) {
          * device and heater. Possibilities are 433 MHz RF,
          * Bluetooth and Smartphone or GSM?
          */
+        if (timeCurr > timeComm + COMM_LOOP_TIMEOUT) {
+            timeComm = millis();
+            /* check connection to heater */
+            if (1 < random(0,10)) {
+                mFlgCommEstablished = true;
+            }
+            else {
+                mFlgCommEstablished = false;
+            }
+        }
     }
 }

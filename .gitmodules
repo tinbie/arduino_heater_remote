@@ -1,0 +1,3 @@
+[submodule "ext/DieselHeaterRF"]
+	path = ext/DieselHeaterRF
+	url = git://github.com/jakkik/DieselHeaterRF.git

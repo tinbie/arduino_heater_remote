@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include "ext/DieselHeaterRF/DieselHeaterRF.h"
 
 
 /****************************************************************************/
@@ -30,15 +31,14 @@
 #define DISPLAY_LOOP_TIMEOUT    100
 #define LED_LOOP_TIMEOUT        1000
 #define BUTTON_LOOP_TIMEOUT     2000
-#define COMM_LOOP_TIMEOUT       500
+#define COMM_LOOP_TIMEOUT       5000
+
+#define HEATER_CONNECT_TIMEOUT  60000UL
 
 
 /****************************************************************************/
-/* Locals */
+/* Structures */
 /****************************************************************************/
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT,
-  OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
-
 typedef enum {
     ERR_OK,
     ERR_ERR
@@ -58,6 +58,14 @@ typedef struct {
     uint64_t tsEnd;
 } TIMER_T;
 
+
+/****************************************************************************/
+/* Local Variables */
+/****************************************************************************/
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT,
+  OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
+
+DieselHeaterRF heater;
 STATE_T mState;
 TIMER_T mTimer;
 bool mStateLedGreen;
@@ -73,7 +81,7 @@ void static stateSet(STATE_T status);
 
 ERR_STATUS_T static peripheriInit(void);
 
-void static displayRefresh(uint16_t duration);
+void static displayRefresh(uint16_t duration, heater_state_t stateHeater);
 
 void static ledRefresh(void);
 
@@ -98,6 +106,8 @@ void static stateSet(STATE_T status) {
 /** Function
  */
 ERR_STATUS_T static peripheriInit(void) {
+    uint32_t heaterAddr;
+
     /* init oled display */
     display.begin(SSD1306_SWITCHCAPVCC);
     display.display();
@@ -110,6 +120,21 @@ ERR_STATUS_T static peripheriInit(void) {
     pinMode(BUTTON, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(BUTTON), irqButton, LOW);
 
+    /* init heater */
+    heater.begin();
+    heaterAddr = heater.findAddress(HEATER_CONNECT_TIMEOUT);
+
+    if (heaterAddr) {
+        Serial.print("Got address: ");
+        Serial.println(heaterAddr, HEX);
+        heater.setAddress(heaterAddr);
+        mFlgCommEstablished = true;
+        /* store the address somewhere, eg. NVS */
+    } else {
+        Serial.println("Failed to find a heater");
+        return ERR_ERR;
+    }
+
     stateSet(STATE_STANDBY);
 
     return ERR_OK;
@@ -119,7 +144,7 @@ ERR_STATUS_T static peripheriInit(void) {
 /****************************************************************************/
 /** Function
  */
-void static displayRefresh(uint16_t duration) {
+void static displayRefresh(uint16_t duration, heater_state_t stateHeater) {
     /* refresh display */
     display.clearDisplay();
     display.setTextSize(2);
@@ -138,7 +163,8 @@ void static displayRefresh(uint16_t duration) {
             display.println(" min");
             display.setTextSize(1);
             if (true == mFlgCommEstablished) {
-                display.println("verbunden");
+                display.print("Status: ");
+                display.println(stateHeater.state);
             }
             else {
                 display.println("nicht verbunden");
@@ -151,7 +177,8 @@ void static displayRefresh(uint16_t duration) {
             display.println(" min");
             display.setTextSize(1);
             if (true == mFlgCommEstablished) {
-                display.println("verbunden");
+                display.print("Status: ");
+                display.println(stateHeater.state);
             }
             else {
                 display.println("nicht verbunden");
@@ -240,6 +267,8 @@ void loop(void) {
     uint64_t timeButton = 0;
     uint64_t timeComm = 0;
     static uint16_t duration;
+    heater_state_t stateHeater;
+    bool result;
 
     while(1) {
         /* get timestamp */
@@ -299,7 +328,7 @@ void loop(void) {
                     break;
             }
             timeDisplay = millis();
-            displayRefresh(duration);
+            displayRefresh(duration, stateHeater);
         }
 
         /* LED loop */
@@ -309,18 +338,36 @@ void loop(void) {
         }
 
         /* TODO: implement loop for communication between
-         * device and heater. Possibilities are 433 MHz RF,
-         * Bluetooth and Smartphone or GSM?
+         * device and heater.
          */
         if (timeCurr > timeComm + COMM_LOOP_TIMEOUT) {
             timeComm = millis();
-            /* check connection to heater */
-            if (1 < random(0,10)) {
-                mFlgCommEstablished = true;
+            /* get state */
+            heater.sendCommand(HEATER_CMD_WAKEUP);
+            result = heater.getState(&stateHeater);
+            if (false == result) {
+                continue;
             }
-            else {
-                mFlgCommEstablished = false;
+
+            switch (mState) {
+                case STATE_HEAT:
+                    if (HEATER_STATE_OFF == stateHeater.state) {
+                        heater.sendCommand(HEATER_CMD_POWER);
+                    }
+                    break;
+
+                default:
+                    if ((HEATER_STATE_STARTUP == stateHeater.state) ||
+                        (HEATER_STATE_WARMING == stateHeater.state) ||
+                        (HEATER_STATE_WARMING_WAIT == stateHeater.state) ||
+                        (HEATER_STATE_PRE_RUN == stateHeater.state) ||
+                        (HEATER_STATE_RUNNING == stateHeater.state)) {
+                        heater.sendCommand(HEATER_CMD_POWER);
+                    }
+                    break;
             }
         }
+
+        /* space for the next loop */
     }
 }

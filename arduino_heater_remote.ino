@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <EEPROM.h>
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -27,12 +28,11 @@
 #define LED_R           4
 #define LED_G           5
 
-/* loop timeouts */
+/* timeouts */
 #define DISPLAY_LOOP_TIMEOUT    100
 #define LED_LOOP_TIMEOUT        1000
 #define BUTTON_LOOP_TIMEOUT     2000
 #define COMM_LOOP_TIMEOUT       5000
-
 #define HEATER_CONNECT_TIMEOUT  60000UL
 
 
@@ -81,6 +81,8 @@ void static stateSet(STATE_T status);
 
 ERR_STATUS_T static peripheriInit(void);
 
+ERR_STATUS_T static dieselHeaterInit(void);
+
 void static displayRefresh(uint16_t duration, heater_state_t stateHeater);
 
 void static ledRefresh(void);
@@ -106,7 +108,6 @@ void static stateSet(STATE_T status) {
 /** Function
  */
 ERR_STATUS_T static peripheriInit(void) {
-    uint32_t heaterAddr;
 
     /* init oled display */
     display.begin(SSD1306_SWITCHCAPVCC);
@@ -120,22 +121,37 @@ ERR_STATUS_T static peripheriInit(void) {
     pinMode(BUTTON, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(BUTTON), irqButton, LOW);
 
-    /* init heater */
-    heater.begin();
-    heaterAddr = heater.findAddress(HEATER_CONNECT_TIMEOUT);
+    return ERR_OK;
+}
 
-    if (heaterAddr) {
-        Serial.print("Got address: ");
-        Serial.println(heaterAddr, HEX);
-        heater.setAddress(heaterAddr);
-        mFlgCommEstablished = true;
-        /* store the address somewhere, eg. NVS */
-    } else {
-        Serial.println("Failed to find a heater");
-        return ERR_ERR;
+
+/****************************************************************************/
+/** Function
+ */
+ERR_STATUS_T static dieselHeaterInit(void) {
+    uint16_t eepromHeaterAddr = 0;
+    uint32_t heaterAddr;
+
+    /* init heater, check EEPROM for address */
+    heater.begin();
+    EEPROM.get(eepromHeaterAddr, heaterAddr);
+    if (0xffff == heaterAddr) {
+        /* EEPROM empty, try to pair heater */
+        heaterAddr = heater.findAddress(HEATER_CONNECT_TIMEOUT);
+        if (0 == heaterAddr) {
+            Serial.println("Failed to find a heater");
+            return ERR_ERR;
+        }
+        else {
+            EEPROM.put(eepromHeaterAddr, heaterAddr);  
+        }
     }
 
-    stateSet(STATE_STANDBY);
+    /* got address, set state */
+    Serial.print("Got address: ");
+    Serial.println(heaterAddr, HEX);
+    heater.setAddress(heaterAddr);
+    mFlgCommEstablished = true;
 
     return ERR_OK;
 }
@@ -248,10 +264,20 @@ void static irqButton(void) {
 /** Function
  */
 void setup(void) {
-    ERR_STATUS_T result;
+    ERR_STATUS_T result = ERR_OK;
 
-    result = peripheriInit();
-    if (ERR_OK != result) {
+    if (ERR_OK == result) {
+        result = peripheriInit();
+    }
+
+    if (ERR_OK == result) {
+        result = dieselHeaterInit();
+    }
+
+    if (ERR_OK == result) {
+        stateSet(STATE_STANDBY);
+    }
+    else {
         stateSet(STATE_ERR);
     }
 }
